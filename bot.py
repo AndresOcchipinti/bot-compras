@@ -1,5 +1,6 @@
 import os
 import json
+import asyncio
 import psycopg2
 from groq import Groq
 from telegram import Update
@@ -253,11 +254,23 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"Error: {e}")
 
 
+# ── Limpieza de webhook previo ────────────────────────────────────────────────
+async def limpiar_webhook():
+    """Elimina cualquier webhook o sesión de polling activa antes de arrancar."""
+    app_temp = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    await app_temp.bot.delete_webhook(drop_pending_updates=True)
+    await app_temp.shutdown()
+    print("✅ Webhook previo eliminado.")
+
+
 # ── Arranque con webhook ──────────────────────────────────────────────────────
 if __name__ == "__main__":
     print("🤖 Bot iniciando...")
     init_db()
     print("✅ Base de datos lista.")
+
+    # Limpia cualquier instancia previa antes de registrar el webhook nuevo
+    asyncio.run(limpiar_webhook())
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
@@ -270,5 +283,6 @@ if __name__ == "__main__":
     app.run_webhook(
         listen="0.0.0.0",
         port=int(os.environ.get("PORT", 8443)),
-        webhook_url=f"{WEBHOOK_URL}/webhook"
+        webhook_url=f"{WEBHOOK_URL}/webhook",
+        url_path="/webhook",   # ← corregido: indica la ruta donde escucha
     )
