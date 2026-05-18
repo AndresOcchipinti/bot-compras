@@ -22,9 +22,14 @@ cliente_ia = Groq(api_key=GROQ_API_KEY)
 
 # ── Base de datos ─────────────────────────────────────────────────────────────
 def get_conn():
-    # psycopg2 puede parsear la URL directamente, manejando caracteres especiales
-    conn = psycopg2.connect(DATABASE_URL, sslmode="require")
-    return conn
+    return psycopg2.connect(
+        host=os.getenv("DB_HOST"),
+        port=os.getenv("DB_PORT"),
+        dbname=os.getenv("DB_NAME"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD"),
+        sslmode="require"
+    )
 
 def init_db():
     with get_conn() as conn:
