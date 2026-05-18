@@ -22,11 +22,15 @@ cliente_ia = Groq(api_key=GROQ_API_KEY)
 
 # ── Base de datos ─────────────────────────────────────────────────────────────
 def get_conn():
+    host = os.getenv("DB_HOST")
+    port = os.getenv("DB_PORT")
+    user = os.getenv("DB_USER")
+    print(f"DEBUG - host: {host}, port: {port}, user: {user}")  # ← log temporal
     return psycopg2.connect(
-        host=os.getenv("DB_HOST"),
-        port=os.getenv("DB_PORT"),
+        host=host,
+        port=port,
         dbname=os.getenv("DB_NAME"),
-        user=os.getenv("DB_USER"),
+        user=user,
         password=os.getenv("DB_PASSWORD"),
         sslmode="require"
     )
