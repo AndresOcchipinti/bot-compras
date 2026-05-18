@@ -3,7 +3,6 @@ import json
 import asyncio
 import threading
 import urllib.request
-from urllib.parse import urlparse
 import psycopg2
 from groq import Groq
 from telegram import Update
@@ -23,15 +22,9 @@ cliente_ia = Groq(api_key=GROQ_API_KEY)
 
 # ── Base de datos ─────────────────────────────────────────────────────────────
 def get_conn():
-    url = urlparse(DATABASE_URL)
-    return psycopg2.connect(
-        host=url.hostname,
-        port=url.port,
-        dbname=url.path[1:],
-        user=url.username,
-        password=url.password,
-        sslmode="require"
-    )
+    # psycopg2 puede parsear la URL directamente, manejando caracteres especiales
+    conn = psycopg2.connect(DATABASE_URL, sslmode="require")
+    return conn
 
 def init_db():
     with get_conn() as conn:
