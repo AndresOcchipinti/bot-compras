@@ -11,7 +11,6 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GROQ_API_KEY   = os.getenv("GROQ_API_KEY")
 DATABASE_URL   = os.getenv("DATABASE_URL")
-WEBHOOK_URL    = os.getenv("WEBHOOK_URL", "https://bot-compras.onrender.com")
 
 # ── Configura Groq ────────────────────────────────────────────────────────────
 cliente_ia = Groq(api_key=GROQ_API_KEY)
@@ -22,6 +21,7 @@ def get_conn():
     return psycopg2.connect(DATABASE_URL)
 
 def init_db():
+    """Crea la tabla si no existe."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -55,6 +55,7 @@ def db_delete_producto(producto: str):
         conn.commit()
 
 def db_resetear_agotados():
+    """Pone en 2 todos los productos con cantidad <= 1 y devuelve cuáles fueron."""
     with get_conn() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT producto FROM inventario WHERE cantidad <= 1")
@@ -253,7 +254,7 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"Error: {e}")
 
 
-# ── Arranque con webhook ──────────────────────────────────────────────────────
+# ── Arranque ──────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     print("🤖 Bot iniciando...")
     init_db()
@@ -266,9 +267,5 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("inventario", comando_inventario))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, manejar_mensaje))
 
-    print("✅ Bot corriendo con webhook.")
-    app.run_webhook(
-        listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 8443)),
-        webhook_url=f"{WEBHOOK_URL}/webhook"
-    )
+    print("✅ Bot corriendo. Presioná Ctrl+C para detenerlo.")
+    app.run_polling()
