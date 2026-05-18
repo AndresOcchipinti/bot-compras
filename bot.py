@@ -1,5 +1,8 @@
 import os
 import json
+import asyncio
+import threading
+import urllib.request
 import psycopg2
 from groq import Groq
 from telegram import Update
@@ -253,11 +256,34 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"Error: {e}")
 
 
+# ── Keep alive (evita que Render se duerma) ───────────────────────────────────
+def keep_alive():
+    while True:
+        try:
+            urllib.request.urlopen(WEBHOOK_URL)
+        except Exception:
+            pass
+        threading.Event().wait(600)  # ping cada 10 minutos
+
+
+# ── Limpieza de webhook previo ────────────────────────────────────────────────
+async def limpiar_webhook():
+    app_temp = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    await app_temp.bot.delete_webhook(drop_pending_updates=True)
+    await app_temp.shutdown()
+    print("✅ Webhook previo eliminado.")
+
+
 # ── Arranque con webhook ──────────────────────────────────────────────────────
 if __name__ == "__main__":
     print("🤖 Bot iniciando...")
     init_db()
     print("✅ Base de datos lista.")
+
+    asyncio.run(limpiar_webhook())
+
+    threading.Thread(target=keep_alive, daemon=True).start()
+    print("✅ Keep-alive activo.")
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
@@ -270,5 +296,6 @@ if __name__ == "__main__":
     app.run_webhook(
         listen="0.0.0.0",
         port=int(os.environ.get("PORT", 8443)),
-        webhook_url=f"{WEBHOOK_URL}/webhook"
+        webhook_url=f"{WEBHOOK_URL}/webhook",
+        url_path="/webhook",
     )
