@@ -1,5 +1,6 @@
 import os
 import json
+import psycopg2
 from groq import Groq
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
@@ -9,18 +10,64 @@ from dotenv import load_dotenv
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GROQ_API_KEY   = os.getenv("GROQ_API_KEY")
+DATABASE_URL   = os.getenv("DATABASE_URL")
 
 # ── Configura Groq ────────────────────────────────────────────────────────────
 cliente_ia = Groq(api_key=GROQ_API_KEY)
 
-# ── Base de datos en memoria ──────────────────────────────────────────────────
-inventario = {}
+
+# ── Base de datos ─────────────────────────────────────────────────────────────
+def get_conn():
+    return psycopg2.connect(DATABASE_URL)
+
+def init_db():
+    """Crea la tabla si no existe."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS inventario (
+                    producto TEXT PRIMARY KEY,
+                    cantidad INTEGER NOT NULL
+                )
+            """)
+        conn.commit()
+
+def db_get_inventario() -> dict:
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT producto, cantidad FROM inventario")
+            return {row[0]: row[1] for row in cur.fetchall()}
+
+def db_set_producto(producto: str, cantidad: int):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO inventario (producto, cantidad)
+                VALUES (%s, %s)
+                ON CONFLICT (producto) DO UPDATE SET cantidad = EXCLUDED.cantidad
+            """, (producto, cantidad))
+        conn.commit()
+
+def db_delete_producto(producto: str):
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM inventario WHERE producto = %s", (producto,))
+        conn.commit()
+
+def db_resetear_agotados():
+    """Pone en 2 todos los productos con cantidad <= 1 y devuelve cuáles fueron."""
+    with get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT producto FROM inventario WHERE cantidad <= 1")
+            productos = [row[0] for row in cur.fetchall()]
+            if productos:
+                cur.execute("UPDATE inventario SET cantidad = 2 WHERE cantidad <= 1")
+        conn.commit()
+    return productos
 
 
 # ── Función principal de IA ───────────────────────────────────────────────────
 def analizar_mensaje(mensaje: str) -> dict:
-    """Le pide a Groq que interprete el mensaje del usuario."""
-
     respuesta = cliente_ia.chat.completions.create(
         model="llama-3.3-70b-versatile",
         messages=[
@@ -57,12 +104,13 @@ Ejemplos:
 
     texto = respuesta.choices[0].message.content.strip()
     texto = texto.replace("```json", "").replace("```", "").strip()
-
     return json.loads(texto)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 def generar_lista_compras() -> str:
+    inventario = db_get_inventario()
+
     if not inventario:
         return "📦 Tu inventario está vacío. Contame qué tenés en casa."
 
@@ -90,7 +138,6 @@ def generar_lista_compras() -> str:
 
 
 async def procesar_accion(datos: dict, update: Update) -> str | None:
-    """Procesa una acción y devuelve el texto de respuesta, o None si es lista/vaciar (se manejan aparte)."""
     accion   = datos.get("accion")
     producto = datos.get("producto")
     cantidad = datos.get("cantidad")
@@ -98,13 +145,14 @@ async def procesar_accion(datos: dict, update: Update) -> str | None:
 
     if accion == "actualizar" and producto:
         cantidad_final = 0 if agotado else (cantidad if cantidad is not None else 1)
-        inventario[producto] = cantidad_final
+        db_set_producto(producto, cantidad_final)
         if cantidad_final == 0:
             return f"❌ *{producto.capitalize()}* agotado, agregado a la lista."
         else:
             return f"✅ *{producto.capitalize()}*: {cantidad_final} unidad(es)."
 
     elif accion == "consultar" and producto:
+        inventario = db_get_inventario()
         if producto in inventario:
             cant   = inventario[producto]
             estado = "agotado ❌" if cant == 0 else f"{cant} unidad(es)"
@@ -117,20 +165,17 @@ async def procesar_accion(datos: dict, update: Update) -> str | None:
         return None
 
     elif accion == "eliminar" and producto:
+        inventario = db_get_inventario()
         if producto in inventario:
-            del inventario[producto]
+            db_delete_producto(producto)
             return f"🗑️ *{producto.capitalize()}* eliminado."
         else:
             return f"🤷 No tenía *{producto}* en el inventario."
 
     elif accion == "vaciar":
-        productos_reseteados = []
-        for p in list(inventario.keys()):
-            if inventario[p] <= 1:
-                inventario[p] = 2
-                productos_reseteados.append(p.capitalize())
+        productos_reseteados = db_resetear_agotados()
         if productos_reseteados:
-            lista = ", ".join(productos_reseteados)
+            lista = ", ".join([p.capitalize() for p in productos_reseteados])
             await update.message.reply_text(
                 f"🛍️ ¡Buenísimo! Marqué como comprados:\n_{lista}_\n\nEl inventario quedó actualizado.",
                 parse_mode="Markdown"
@@ -165,6 +210,8 @@ async def comando_lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def comando_inventario(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    inventario = db_get_inventario()
+
     if not inventario:
         await update.message.reply_text("📦 El inventario está vacío.")
         return
@@ -180,24 +227,19 @@ async def comando_inventario(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ── Manejador de mensajes ─────────────────────────────────────────────────────
 async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mensaje = update.message.text
-
-    # Divide el mensaje en líneas, filtrando líneas vacías
-    lineas = [l.strip() for l in mensaje.strip().splitlines() if l.strip()]
+    lineas  = [l.strip() for l in mensaje.strip().splitlines() if l.strip()]
 
     try:
         if len(lineas) == 1:
-            # Mensaje de una sola línea — flujo normal
-            datos = analizar_mensaje(lineas[0])
+            datos     = analizar_mensaje(lineas[0])
             respuesta = await procesar_accion(datos, update)
             if respuesta:
                 await update.message.reply_text(respuesta, parse_mode="Markdown")
-
         else:
-            # Múltiples líneas — procesa cada una y agrupa la respuesta
             respuestas = []
             for linea in lineas:
                 try:
-                    datos = analizar_mensaje(linea)
+                    datos     = analizar_mensaje(linea)
                     respuesta = await procesar_accion(datos, update)
                     if respuesta:
                         respuestas.append(respuesta)
@@ -205,21 +247,18 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     respuestas.append(f"⚠️ No entendí: _{linea}_")
 
             if respuestas:
-                await update.message.reply_text(
-                    "\n".join(respuestas),
-                    parse_mode="Markdown"
-                )
+                await update.message.reply_text("\n".join(respuestas), parse_mode="Markdown")
 
     except Exception as e:
-        await update.message.reply_text(
-            "⚠️ Hubo un error procesando tu mensaje. Intentá de nuevo."
-        )
+        await update.message.reply_text("⚠️ Hubo un error procesando tu mensaje. Intentá de nuevo.")
         print(f"Error: {e}")
 
 
 # ── Arranque ──────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     print("🤖 Bot iniciando...")
+    init_db()
+    print("✅ Base de datos lista.")
 
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
