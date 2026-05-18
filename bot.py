@@ -1,6 +1,9 @@
 import os
 import json
 import asyncio
+import threading
+import urllib.request
+from urllib.parse import urlparse
 import psycopg2
 from groq import Groq
 from telegram import Update
@@ -20,7 +23,15 @@ cliente_ia = Groq(api_key=GROQ_API_KEY)
 
 # ── Base de datos ─────────────────────────────────────────────────────────────
 def get_conn():
-    return psycopg2.connect(DATABASE_URL)
+    url = urlparse(DATABASE_URL)
+    return psycopg2.connect(
+        host=url.hostname,
+        port=url.port,
+        dbname=url.path[1:],
+        user=url.username,
+        password=url.password,
+        sslmode="require"
+    )
 
 def init_db():
     with get_conn() as conn:
@@ -254,9 +265,18 @@ async def manejar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"Error: {e}")
 
 
+# ── Keep alive (evita que Render se duerma) ───────────────────────────────────
+def keep_alive():
+    while True:
+        try:
+            urllib.request.urlopen(WEBHOOK_URL)
+        except Exception:
+            pass
+        threading.Event().wait(600)  # ping cada 10 minutos
+
+
 # ── Limpieza de webhook previo ────────────────────────────────────────────────
 async def limpiar_webhook():
-    """Elimina cualquier webhook o sesión de polling activa antes de arrancar."""
     app_temp = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
     await app_temp.bot.delete_webhook(drop_pending_updates=True)
     await app_temp.shutdown()
@@ -272,6 +292,10 @@ if __name__ == "__main__":
     # Limpia cualquier instancia previa antes de registrar el webhook nuevo
     asyncio.run(limpiar_webhook())
 
+    # Mantiene el servicio despierto en Render
+    threading.Thread(target=keep_alive, daemon=True).start()
+    print("✅ Keep-alive activo.")
+
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start",      comando_inicio))
@@ -284,5 +308,5 @@ if __name__ == "__main__":
         listen="0.0.0.0",
         port=int(os.environ.get("PORT", 8443)),
         webhook_url=f"{WEBHOOK_URL}/webhook",
-        url_path="/webhook",   # ← corregido: indica la ruta donde escucha
+        url_path="/webhook",
     )
